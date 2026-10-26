@@ -41,11 +41,19 @@ OSS_ACCESS_KEY_ID = os.getenv("OSS_ACCESS_KEY_ID", "")
 OSS_ACCESS_KEY_SECRET = os.getenv("OSS_ACCESS_KEY_SECRET", "")
 OSS_PREFIX = os.getenv("OSS_INTAKE_PREFIX", "intelligent-intake")
 
+
 class ZillizMaterialVectorStore:
-    """用 Zilliz Cloud（Milvus API）保存材料块向量和可追溯元数据。"""
+    """Zilliz Cloud 上的材料块索引：稠密向量语义召回 + BM25 关键词召回。
+
+    BM25 由服务端从 ``text`` 字段自动分词生成稀疏向量（中文用 jieba 分析器），
+    因此写入时不提供 ``sparse`` 字段。集群版本不支持时自动降级为纯稠密检索，
+    并把原因记录在 ``bm25_error`` 里，供健康检查如实上报。
+    """
 
     def __init__(self) -> None:
         self._client = None
+        self.bm25_enabled = False
+        self.bm25_error = ""
 
     @property
     def configured(self) -> bool:
@@ -84,30 +92,72 @@ class ZillizMaterialVectorStore:
             return []
         client = self._get_client()
         self._ensure_collection(client)
-        vector = embed_texts([query])[0]
         safe_case_no = _escape_milvus_string(case_no)
+        expression = f'case_no == "{safe_case_no}"'
+        output_fields = ["material_id", "file_name", "page_no", "block_no", "text"]
+
+        if self.bm25_enabled:
+            try:
+                return self._hybrid_search(client, query, expression, limit, output_fields)
+            except Exception as exc:
+                self.bm25_enabled = False
+                self.bm25_error = redact_sensitive_text(f"{type(exc).__name__}: {exc}")[:300]
+
+        vector = embed_texts([query])[0]
         hits = client.search(
             collection_name=MILVUS_COLLECTION,
             data=[vector],
-            filter=f'case_no == "{safe_case_no}"',
+            filter=expression,
             limit=limit,
-            output_fields=["material_id", "file_name", "page_no", "block_no", "text"],
+            output_fields=output_fields,
             search_params={"metric_type": "COSINE", "params": {}},
         )
-        output: list[EvidenceRef] = []
-        for hit in hits[0] if hits else []:
+        return _hits_to_evidence(hits[0] if hits else [])
+
+    def _hybrid_search(self, client, query: str, expression: str, limit: int, output_fields: list[str]) -> list[EvidenceRef]:
+        """稠密 + BM25 双路召回，用 RRF 融合排名。"""
+
+        from pymilvus import AnnSearchRequest, RRFRanker
+
+        vector = embed_texts([query])[0]
+        dense_request = AnnSearchRequest(
+            data=[vector],
+            anns_field="embedding",
+            param={"metric_type": "COSINE", "params": {}},
+            limit=limit,
+            expr=expression,
+        )
+        bm25_request = AnnSearchRequest(
+            data=[query],
+            anns_field="sparse",
+            param={"metric_type": "BM25"},
+            limit=limit,
+            expr=expression,
+        )
+        hits = client.hybrid_search(
+            collection_name=MILVUS_COLLECTION,
+            reqs=[dense_request, bm25_request],
+            ranker=RRFRanker(k=60),
+            limit=limit,
+            output_fields=output_fields,
+        )
+        results = hits[0] if hits else []
+        total = max(len(results), 1)
+        evidence: list[EvidenceRef] = []
+        for rank, hit in enumerate(results):
             entity = hit.get("entity") or {}
-            output.append(
+            evidence.append(
                 EvidenceRef(
                     material_id=str(entity.get("material_id", "")),
                     file_name=str(entity.get("file_name", "")),
                     page_no=int(entity.get("page_no", 1)),
                     block_no=int(entity.get("block_no", 1)),
                     excerpt=str(entity.get("text", ""))[:240],
-                    score=max(0.0, min(float(hit.get("distance", 0.0)), 1.0)),
+                    # RRF 分数量级很小且不可跨库比较，这里按名次归一化，只表达相对顺序
+                    score=round(1.0 - rank / (total + 1), 4),
                 )
             )
-        return output
+        return evidence
 
     def _get_client(self):
         if self._client is None:
@@ -121,12 +171,19 @@ class ZillizMaterialVectorStore:
             self._client = MilvusClient(**kwargs)
         return self._client
 
-    @staticmethod
-    def _ensure_collection(client) -> None:
+    def _ensure_collection(self, client) -> None:
         if client.has_collection(collection_name=MILVUS_COLLECTION):
+            detail = client.describe_collection(collection_name=MILVUS_COLLECTION)
+            fields = {field.get("name") for field in detail.get("fields", [])}
+            self.bm25_enabled = "sparse" in fields
+            if not self.bm25_enabled:
+                self.bm25_error = "已存在的集合没有 sparse 字段，需执行 scripts/intake_collection.py --recreate"
             client.load_collection(collection_name=MILVUS_COLLECTION)
             return
-        from pymilvus import DataType
+        self._create_collection(client, with_bm25=True)
+
+    def _create_collection(self, client, *, with_bm25: bool) -> None:
+        from pymilvus import DataType, Function, FunctionType
 
         schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
         schema.add_field(field_name="id", datatype=DataType.VARCHAR, is_primary=True, max_length=64)
@@ -140,23 +197,77 @@ class ZillizMaterialVectorStore:
         schema.add_field(field_name="file_name", datatype=DataType.VARCHAR, max_length=512)
         schema.add_field(field_name="page_no", datatype=DataType.INT64)
         schema.add_field(field_name="block_no", datatype=DataType.INT64)
-        schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=8192)
+        if with_bm25:
+            schema.add_field(
+                field_name="text",
+                datatype=DataType.VARCHAR,
+                max_length=8192,
+                enable_analyzer=True,
+                analyzer_params={"type": "chinese"},
+                enable_match=True,
+            )
+            schema.add_field(field_name="sparse", datatype=DataType.SPARSE_FLOAT_VECTOR)
+            schema.add_function(
+                Function(
+                    name="text_bm25",
+                    function_type=FunctionType.BM25,
+                    input_field_names=["text"],
+                    output_field_names=["sparse"],
+                )
+            )
+        else:
+            schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=8192)
+
         index_params = client.prepare_index_params()
-        index_params.add_index(
-            field_name="embedding",
-            index_type="AUTOINDEX",
-            metric_type="COSINE",
-        )
-        client.create_collection(
-            collection_name=MILVUS_COLLECTION,
-            schema=schema,
-            index_params=index_params,
-        )
+        index_params.add_index(field_name="embedding", index_type="AUTOINDEX", metric_type="COSINE")
+        if with_bm25:
+            index_params.add_index(
+                field_name="sparse",
+                index_type="SPARSE_INVERTED_INDEX",
+                metric_type="BM25",
+            )
+        try:
+            client.create_collection(collection_name=MILVUS_COLLECTION, schema=schema, index_params=index_params)
+            self.bm25_enabled = with_bm25
+        except Exception as exc:
+            if not with_bm25:
+                raise
+            self.bm25_enabled = False
+            self.bm25_error = redact_sensitive_text(f"{type(exc).__name__}: {exc}")[:300]
+            self._create_collection(client, with_bm25=False)
         client.load_collection(collection_name=MILVUS_COLLECTION)
+
+    def drop(self) -> None:
+        """删除集合，用于 schema 变更后重建。"""
+
+        if not (MILVUS_ENDPOINT and MILVUS_TOKEN):
+            raise RuntimeError("未配置 Zilliz，无法删除集合")
+        client = self._get_client()
+        if client.has_collection(collection_name=MILVUS_COLLECTION):
+            client.drop_collection(collection_name=MILVUS_COLLECTION)
+        self.bm25_enabled = False
+        self.bm25_error = ""
+
+
+def _hits_to_evidence(hits: list[dict[str, Any]]) -> list[EvidenceRef]:
+    output: list[EvidenceRef] = []
+    for hit in hits:
+        entity = hit.get("entity") or {}
+        output.append(
+            EvidenceRef(
+                material_id=str(entity.get("material_id", "")),
+                file_name=str(entity.get("file_name", "")),
+                page_no=int(entity.get("page_no", 1)),
+                block_no=int(entity.get("block_no", 1)),
+                excerpt=str(entity.get("text", ""))[:240],
+                score=max(0.0, min(float(hit.get("distance", 0.0)), 1.0)),
+            )
+        )
+    return output
 
 
 class EvidenceIndex:
-    """Zilliz 语义定位；未配置或调用失败时使用进程内关键词检索。"""
+    """证据定位入口：Zilliz 稠密 + BM25 混合召回；未配置或调用失败时退回进程内关键词检索。"""
 
     def __init__(self) -> None:
         self._blocks_by_case: dict[str, list[PageBlock]] = {}
@@ -166,7 +277,13 @@ class EvidenceIndex:
         if not intake_vector_store.configured:
             return {"backend": "local", "indexed": len(blocks), "reason": "Zilliz 或百炼向量模型未配置"}
         try:
-            return {"backend": "zilliz", "indexed": intake_vector_store.index(case_no, blocks)}
+            indexed = intake_vector_store.index(case_no, blocks)
+            return {
+                "backend": "zilliz",
+                "indexed": indexed,
+                "retrieval": "hybrid_bm25" if intake_vector_store.bm25_enabled else "dense_only",
+                "bm25_error": intake_vector_store.bm25_error,
+            }
         except Exception as exc:
             return {
                 "backend": "local_fallback",
@@ -456,11 +573,16 @@ def _check_zilliz() -> dict[str, Any]:
     try:
         client = intake_vector_store._get_client()
         client.list_collections()
+        bm25_ready: bool | None = None
+        if client.has_collection(collection_name=MILVUS_COLLECTION):
+            detail = client.describe_collection(collection_name=MILVUS_COLLECTION)
+            bm25_ready = "sparse" in {field.get("name") for field in detail.get("fields", [])}
         return {
             "configured": True,
             "reachable": True,
             "ready": intake_vector_store.configured,
             "embedding_configured": is_embedding_configured(),
+            "bm25_ready": bm25_ready,
         }
     except Exception as exc:
         return {
@@ -472,30 +594,14 @@ def _check_zilliz() -> dict[str, Any]:
 
 
 def _check_ocr() -> dict[str, Any]:
-    """扫描件与图片材料依赖本机的 Tesseract 可执行文件。"""
+    """OCR 后端可用性：云端百炼 VL 或本机 Tesseract，任一可用即可。"""
 
-    try:
-        import pytesseract
-    except ImportError as exc:
-        return {"ready": False, "error": f"pytesseract 未安装：{type(exc).__name__}"}
-    try:
-        version = pytesseract.get_tesseract_version()
-    except Exception as exc:
-        return {
-            "ready": False,
-            "error": "未找到 tesseract 可执行文件，扫描件 OCR 不可用",
-            "detail": redact_sensitive_text(f"{type(exc).__name__}"),
-        }
-    languages = []
-    try:
-        languages = sorted(pytesseract.get_languages(config=""))
-    except Exception:
-        pass
+    from app.ocr_client import get_ocr_status
+
+    status = get_ocr_status()
     return {
-        "ready": True,
-        "version": str(version),
-        "languages": languages,
-        "lang_config": os.getenv("OCR_LANG", "chi_sim+eng"),
+        "ready": status["active_backend"] != "unavailable",
+        **status,
     }
 
 

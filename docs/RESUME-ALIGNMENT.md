@@ -10,9 +10,8 @@
 | 类别 | 状态 |
 | --- | --- |
 | 有真实实现且本地可跑 | 固定流水线、受控 ReAct、Reflection、动作白名单与轮次上限、多格式解析与页码块号、四级去重、10 类场景字段组抽取、字段组并行补抽与反幻觉校验、规则与跨材料一致性核验、证据溯源、三份业务文书生成、MCP 工具、运行时自检、要素评测与 Bad Case 导出、运行统计（人工介入率/耗时） |
-| 有真实实现但需要凭据才能验证 | 百炼对话 / 向量 / 重排、多模型横向评测、Zilliz 向量入库与语义召回、OSS 原件与文书存储、PostgreSQL 持久化、Redis 运行状态 |
-| 有代码但本机环境未验证 | 扫描件 OCR（缺 Tesseract 可执行文件与中文语言包） |
-| **未实现** | SFT + LoRA 微调、Elasticsearch、MySQL |
+| 有真实实现但需要凭据才能验证 | 百炼对话 / 向量 / 重排 / VL-OCR、多模型横向评测、Zilliz 稠密+BM25 混合召回、OSS 原件与文书存储、PostgreSQL 持久化、Redis 运行状态 |
+| **未实现** | SFT + LoRA 微调 |
 | **无法由本仓库证明** | 89.33%→98.67%、Macro-F1 98.69%、97.56%、98.05%、人工介入率降低 50%+、可用性 99.9% |
 
 > 本仓库不伪造以上任何指标。`docs/intake-eval.md` 里的数字是 10 份自造样例上的实测值，
@@ -29,7 +28,7 @@
 | LangGraph | 固定流水线状态图 | `app/intake_graph.py:233` | 一致 |
 | MCP | FastMCP Server，stdio + Streamable HTTP 双传输 | `scripts/intake_mcp_server.py` | 一致 |
 | LLaMA-Factory / LoRA | 无 | — | **简历需删** |
-| Elasticsearch | Zilliz 向量召回 + 关键词索引 | `app/intake_integrations.py:44`、`:158` | **简历需改** |
+| Elasticsearch | Zilliz 稠密向量 + BM25 稀疏双路召回（RRF 融合），一个引擎覆盖语义与关键词 | `app/intake_integrations.py:44`、`:117`、`:269` | **简历需改** |
 | MySQL | PostgreSQL（缺失时回落 SQLite） | `app/intake_integrations.py:198` | **简历需改** |
 | Redis | 运行结果短期缓存，缺失时退回进程内 | `app/intake_integrations.py:303` | 一致 |
 
@@ -52,7 +51,7 @@
 
 | 简历表述 | 实现 | 位置 |
 | --- | --- | --- |
-| Word / PDF / 扫描件解析 | docx 走 XML、PDF 走 pypdf、无文本层页面与图片走 Tesseract | `app/material_parser.py:20`、`:114`、`:132` |
+| Word / PDF / 扫描件解析 | docx 走 XML、PDF 走 pypdf、无文本层页面与图片走可切换 OCR 后端（百炼 VL 优先，Tesseract 兜底） | `app/material_parser.py:20`、`:114`、`:132`、`app/ocr_client.py:36` |
 | 保留页码与原文引用 | 每个块带 `file_name / page_no / block_no` | `app/intake_models.py:53`、`:83` |
 | SHA256 | 原文摘要相等直接判重 | `app/material_dedup.py:28` |
 | SimHash | 64 位 SimHash，阈值 0.90 | `app/material_dedup.py:11`、`:77` |
@@ -88,7 +87,7 @@
 | 证据关联 | 每个字段与问题都绑定 `EvidenceRef` | `app/intake_models.py:83` |
 | 跨材料一致性检查 | 同一主体在不同材料中的名称冲突检测 | `app/intake_domain.py:304` |
 | MCP 接入工单档案查询 | 三个 MCP 工具；配置 `INTAKE_ARCHIVE_API_BASE_URL` 后直连外部系统，未配置时返回 `backend=local_sample` | `scripts/intake_mcp_server.py`、`app/intake_tools.py:46`、`:84` |
-| Elasticsearch 疑点定向复核与原文定位 | 未使用 ES；改为 Zilliz 语义召回 + 关键词索引双路 | `app/intake_integrations.py:158`、`app/intake_domain.py:241` |
+| Elasticsearch 疑点定向复核与原文定位 | 不用 ES：Zilliz 服务端中文分词生成 BM25 稀疏向量，与稠密向量双路召回后 RRF 融合；集群不支持时自动降级为纯稠密并如实上报 | `app/intake_integrations.py:117`、`:185` |
 
 ### 2.6 「量化成果」
 
@@ -136,7 +135,7 @@
 | SFT + LoRA 微调，Accuracy 89.33%→98.67%，Macro-F1 98.69% | 删除该条，或改为「参与材料分类规则与难例样本治理」 | 无训练环境与数据，仓库不提供实现 |
 | 对豆包、Qwen、Kimi、GLM 横向评测，最终选用 Qwen3-32B | 保留「横向评测」这件事，但结论模型要按 `scripts/eval_models.py` 实跑结果写 | 评测脚手架已就绪，缺 API key 才能出数字 |
 | 要素识别准确率 97.56%、关键字段 98.05% | 改为实测值并注明样本量，或删除 | 无真实业务标注集 |
-| Elasticsearch | Zilliz Cloud 向量检索 + 关键词索引 | 实际实现 |
+| Elasticsearch | Zilliz 稠密 + BM25 稀疏混合召回 | 实际实现，且能力等价 |
 | MySQL | PostgreSQL | 实际实现 |
 | 人工介入率降低 50%+、可用性 99.9% | 改为 `scripts/intake_stats.py` 跑出的真实人工介入率；可用性需线上监控 | 无线上数据 |
 | 字段组 Schema + 并行抽取 | 保留，已实现 | `app/intake_domain.py:268` |
@@ -162,3 +161,11 @@
    把串行延迟压回来；同时补抽值必须能在原文里逐字找到才接受，把幻觉挡在写库之前。
 7. **为什么模型横评要"缺 key 就跳过"**：选型表如果混进推测数字，整张表就不可信了。现在的做法是
    未配置密钥的目标显式标注跳过原因，表里只留实跑结果。
+8. **为什么用 Zilliz 的 BM25 而不是 Elasticsearch**：ES 的本行是倒排索引全文检索，向量检索是后加的；
+   Milvus 2.5 起稀疏向量 + BM25 是原生能力，稠密和稀疏存在同一个 collection、同一次查询里 RRF 融合。
+   少一套 JVM 服务（本机内存也不允许再跑一个 ES），运维面和一致性都更简单。代价是 BM25 的聚合统计
+   能力不如 ES，但受理场景只需要"按问题找回原文块"，用不到聚合。
+9. **为什么 OCR 默认走云端多模态而不是本机 Tesseract**：受理材料里发票、营业执照、带章印的扫描件
+   居多，传统 OCR 对版式和印章的鲁棒性差；`qwen-vl-ocr` 这类多模态模型对表格与字段对齐明显更稳，
+   而且不用在 Windows 上装系统级引擎。保留 `OCR_BACKEND=tesseract` 是为了私有化交付时能完全离线——
+   这个开关本身就是面试里"云端 vs 本地如何取舍"的答案。

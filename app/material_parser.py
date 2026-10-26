@@ -3,14 +3,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
-import os
 import re
-import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from zipfile import ZipFile
 
 from app.intake_models import MaterialInput, PageBlock, ParsedMaterial
+from app.ocr_client import ocr_image
 
 
 _SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -36,13 +35,15 @@ def parse_material(item: MaterialInput) -> ParsedMaterial:
         pages = _read_docx_pages(raw)
         method = "docx_xml"
     elif suffix == ".pdf":
-        pages, used_ocr = _read_pdf_pages(raw)
+        pages, used_ocr, ocr_backend = _read_pdf_pages(raw)
         method = "ocr" if used_ocr else "pdf_text"
         if used_ocr:
-            warnings.append("部分 PDF 页面未包含文本层，已使用 OCR。")
+            warnings.append(f"部分 PDF 页面未包含文本层，已使用 OCR（后端：{ocr_backend}）。")
     else:
-        pages = [_ocr_image(raw)]
+        text, ocr_backend = _ocr_image(raw)
+        pages = [text]
         method = "ocr"
+        warnings.append(f"图片材料已使用 OCR（后端：{ocr_backend}）。")
 
     blocks: list[PageBlock] = []
     for page_no, page_text in enumerate(pages, start=1):
@@ -111,7 +112,7 @@ def _read_docx_pages(raw: bytes) -> list[str]:
     return [page for page in normalized if page] or [""]
 
 
-def _read_pdf_pages(raw: bytes) -> tuple[list[str], bool]:
+def _read_pdf_pages(raw: bytes) -> tuple[list[str], bool, str]:
     try:
         from pypdf import PdfReader
     except ImportError as exc:
@@ -120,39 +121,31 @@ def _read_pdf_pages(raw: bytes) -> tuple[list[str], bool]:
     reader = PdfReader(io.BytesIO(raw))
     pages: list[str] = []
     used_ocr = False
+    backend = ""
     for page_index, page in enumerate(reader.pages):
         text = (page.extract_text() or "").strip()
         if not text:
-            text = _ocr_pdf_page(raw, page_index)
+            text, backend = _ocr_pdf_page(raw, page_index)
             used_ocr = True
         pages.append(text)
-    return pages, used_ocr
+    return pages, used_ocr, backend
 
 
-def _ocr_pdf_page(raw: bytes, page_index: int) -> str:
-    """使用 PyMuPDF 渲染单页，再交给 Tesseract OCR；依赖缺失时明确报错。"""
+def _ocr_pdf_page(raw: bytes, page_index: int) -> tuple[str, str]:
+    """用 PyMuPDF 把单页渲染成 2 倍图，再交给可切换的 OCR 后端。"""
 
     try:
         import fitz
-        from PIL import Image
-        import pytesseract
     except ImportError as exc:
-        raise RuntimeError("扫描 PDF OCR 需要 pymupdf、Pillow 与 pytesseract。") from exc
+        raise RuntimeError("扫描 PDF OCR 需要 pymupdf。") from exc
 
     with fitz.open(stream=raw, filetype="pdf") as document:
         pixmap = document.load_page(page_index).get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-        image = Image.open(io.BytesIO(pixmap.tobytes("png")))
-        return pytesseract.image_to_string(image, lang=os.getenv("OCR_LANG", "chi_sim+eng")).strip()
+        return ocr_image(pixmap.tobytes("png"))
 
 
-def _ocr_image(raw: bytes) -> str:
-    try:
-        from PIL import Image
-        import pytesseract
-    except ImportError as exc:
-        raise RuntimeError("图片 OCR 需要 Pillow 与 pytesseract。") from exc
-    image = Image.open(io.BytesIO(raw))
-    return pytesseract.image_to_string(image, lang=os.getenv("OCR_LANG", "chi_sim+eng")).strip()
+def _ocr_image(raw: bytes) -> tuple[str, str]:
+    return ocr_image(raw)
 
 
 def _split_blocks(text: str) -> list[str]:
