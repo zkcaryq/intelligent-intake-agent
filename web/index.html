@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>智能受理 Agent</title>
+  <link rel="stylesheet" href="/demo/styles.css?v=20261026-intake-v2" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>智能受理 Agent</h1>
+      <p>材料理解 · 受理合规核验 · 证据追溯 · 标准业务文书生成</p>
+    </div>
+    <div class="top-actions">
+      <button class="btn secondary" onclick="window.open('/docs', '_blank')">API 文档</button>
+      <button class="btn secondary" onclick="window.open('/intake/health', '_blank')">运行检查</button>
+    </div>
+  </header>
+
+  <main class="intake-layout">
+    <section id="runtimeStatus" class="panel runtime-status">
+      <span class="runtime-item">正在读取运行配置...</span>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2>新建受理任务</h2>
+        <span class="muted">Word / PDF / 扫描图片 / 文本</span>
+      </div>
+      <form id="intakeForm" class="form-body">
+        <div class="field">
+          <label for="caseNo">案件编号</label>
+          <input id="caseNo" value="INTAKE-DEMO-001" required />
+        </div>
+        <div class="field">
+          <label for="applicantName">申请主体</label>
+          <input id="applicantName" value="杭州示例科技有限公司" />
+        </div>
+        <div class="field">
+          <label for="scene">业务场景</label>
+          <select id="scene">
+            <option value="">自动识别</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="files">上传业务材料</label>
+          <input id="files" type="file" multiple accept=".txt,.md,.docx,.pdf,.png,.jpg,.jpeg,.tif,.tiff" />
+          <span class="hint">单文件不超过 15 MB；扫描件 OCR 需要本机安装 Tesseract。</span>
+        </div>
+        <div class="field">
+          <label for="sampleText">或粘贴材料文本</label>
+          <textarea id="sampleText">供应商名称：杭州示例科技有限公司
+统一社会信用代码：91330100MA2DEMO001
+法定代表人：张三
+资质名称：信息系统服务资质
+资质有效期：2099-12-31</textarea>
+        </div>
+        <button id="submitBtn" class="btn primary" type="submit">执行智能受理</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2>受理结果</h2>
+        <span id="runId" class="muted">尚未执行</span>
+      </div>
+      <div id="result" class="result-body empty">
+        上传材料或使用示例文本，查看 LangGraph 固定流水线、异常 ReAct、Reflection 和可追溯文书。
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/demo/common.js?v=20261026-intake-v2"></script>
+  <script src="/demo/intake.js?v=20261026-intake-v2"></script>
+</body>
+</html>
