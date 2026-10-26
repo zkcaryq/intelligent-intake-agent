@@ -12,7 +12,6 @@ for name in (
     "RERANKER_API_KEY",
     "INTAKE_DATABASE_URL",
     "DATABASE_URL",
-    "LEGAL_DATABASE_URL",
     "INTAKE_REDIS_URL",
     "REDIS_URL",
     "MILVUS_ENDPOINT",
@@ -30,5 +29,3 @@ for name in (
     "INTAKE_ARCHIVE_API_TOKEN",
 ):
     os.environ[name] = ""
-
-os.environ["LEGAL_KB_BACKEND"] = "mock"

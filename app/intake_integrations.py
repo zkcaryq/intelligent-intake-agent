@@ -21,11 +21,7 @@ from app.reranker_client import rerank_documents
 load_dotenv()
 load_dotenv(".env.example", override=False)
 
-INTAKE_DATABASE_URL = (
-    os.getenv("INTAKE_DATABASE_URL", "")
-    or os.getenv("DATABASE_URL", "")
-    or os.getenv("LEGAL_DATABASE_URL", "")
-)
+INTAKE_DATABASE_URL = os.getenv("INTAKE_DATABASE_URL", "") or os.getenv("DATABASE_URL", "")
 INTAKE_REDIS_URL = os.getenv("INTAKE_REDIS_URL", "") or os.getenv("REDIS_URL", "")
 INTAKE_REDIS_TTL_SECONDS = int(os.getenv("INTAKE_REDIS_TTL_SECONDS", "86400"))
 INTAKE_REDIS_KEY_PREFIX = os.getenv("INTAKE_REDIS_KEY_PREFIX", "intake:run").strip(":")
