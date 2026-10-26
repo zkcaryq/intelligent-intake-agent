@@ -66,10 +66,33 @@ def _render_markdown(metrics: dict) -> str:
     return "\n".join(lines)
 
 
+def _render_badcases(metrics: dict) -> str:
+    lines = [
+        "# 要素抽取 Bad Case",
+        "",
+        f"> 由 `scripts/eval_elements.py --badcase-out` 生成，只记录实测到的问题。",
+        "",
+    ]
+    badcases = metrics["badcases"]
+    if not badcases:
+        lines.append(f"本轮 {metrics['field_total']} 个标注要素全部命中，无 Bad Case。")
+        lines.append("")
+        return "\n".join(lines)
+    lines.extend(["| 用例 | 场景 | 字段 | 问题 | 标注值 | 实际抽取 |", "| --- | --- | --- | --- | --- | --- |"])
+    for item in badcases:
+        lines.append(
+            f"| {item['case_id']} | {item['scene']} | {item['field_name']} | {item['type']} "
+            f"| {item['expected']} | {item['extracted'] or '（空）'} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="要素识别评测")
     parser.add_argument("--json", action="store_true", help="输出完整 JSON")
     parser.add_argument("--write", type=Path, default=None, help="把 Markdown 报告写入指定路径")
+    parser.add_argument("--badcase-out", type=Path, default=None, help="把 Bad Case 清单写入指定路径")
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -80,6 +103,10 @@ if __name__ == "__main__":
         args.write.parent.mkdir(parents=True, exist_ok=True)
         args.write.write_text(_render_markdown(result), encoding="utf-8")
         print(f"报告已写入 {args.write}")
+    if args.badcase_out:
+        args.badcase_out.parent.mkdir(parents=True, exist_ok=True)
+        args.badcase_out.write_text(_render_badcases(result), encoding="utf-8")
+        print(f"Bad Case 清单已写入 {args.badcase_out}（{len(result['badcases'])} 条）")
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:

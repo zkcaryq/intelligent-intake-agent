@@ -72,22 +72,35 @@ def ping_llm() -> dict[str, Any]:
 def call_llm_json(
     messages: list[dict[str, str]],
     *,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     timeout_seconds: float | None = None,
     max_retries: int | None = None,
 ) -> dict[str, Any]:
-    """调用 OpenAI 兼容的大模型接口，并带超时、重试和 JSON 解析。"""
+    """调用 OpenAI 兼容的大模型接口，并带超时、重试和 JSON 解析。
 
-    if not LLM_BASE_URL or not LLM_API_KEY:
+    ``model`` / ``base_url`` / ``api_key`` 可逐次覆盖，用于多模型横向评测；
+    不传时沿用 ``.env`` 里的生产配置。
+    """
+
+    endpoint_base = (base_url or LLM_BASE_URL).rstrip("/")
+    key = api_key or LLM_API_KEY
+    if not endpoint_base or not key:
         return {
             "enabled": False,
             "error": "未配置 LLM_BASE_URL 或 LLM_API_KEY，已使用规则结果。",
         }
 
-    endpoint = f"{LLM_BASE_URL}/chat/completions" if LLM_BASE_URL.endswith("/v1") else f"{LLM_BASE_URL}/v1/chat/completions"
+    endpoint = (
+        f"{endpoint_base}/chat/completions"
+        if endpoint_base.endswith("/v1")
+        else f"{endpoint_base}/v1/chat/completions"
+    )
     timeout = timeout_seconds or LLM_TIMEOUT_SECONDS
     retries = LLM_MAX_RETRIES if max_retries is None else max_retries
     payload = {
-        "model": LLM_MODEL,
+        "model": model or LLM_MODEL,
         "messages": messages,
         "temperature": 0.1,
         "response_format": {"type": "json_object"},
@@ -100,7 +113,7 @@ def call_llm_json(
             response = requests.post(
                 endpoint,
                 headers={
-                    "Authorization": f"Bearer {LLM_API_KEY}",
+                    "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
                 },
                 json=payload,

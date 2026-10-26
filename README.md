@@ -15,8 +15,10 @@
 | Word / PDF / 扫描件解析，保留页码与块号 | `app/material_parser.py:20`、`app/material_parser.py:114` |
 | SHA256 / SimHash / 向量 / LCS 四级去重 | `app/material_dedup.py:17` |
 | 10 类业务场景的字段组 Schema（数据驱动） | `app/intake_scenes.py:43` |
+| 字段组并行补抽 + 原文逐字校验挡幻觉 | `app/intake_domain.py:268`、`app/intake_domain.py:290` |
 | 规则校验 + 跨材料一致性 + 大模型语义核验 | `app/intake_domain.py` |
 | MCP 暴露工单、供应商档案、原文定位工具 | `scripts/intake_mcp_server.py` |
+| 要素评测 / Bad Case / 多模型横评 / 运行统计 | `scripts/eval_elements.py`、`scripts/eval_models.py`、`scripts/intake_stats.py` |
 | 证据逐段溯源（文件 / 页码 / 块号） | `app/intake_models.py` 的 `EvidenceRef` |
 
 业务场景：售后申诉、供应商资质备案、合规审查、退款申请、发票与结算、合同用印、投诉举报、
@@ -88,12 +90,20 @@ MCP Server：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe scripts\eval_elements.py
-.\.venv\Scripts\python.exe scripts\eval_elements.py --write docs\intake-eval.md
+
+# 要素识别准确率 + Bad Case 清单
+.\.venv\Scripts\python.exe scripts\eval_elements.py --write docs\intake-eval.md --badcase-out docs\intake-badcases.md
+
+# 候选模型横向评测（缺 API key 的目标会标注跳过，不填推测值）
+.\.venv\Scripts\python.exe scripts\eval_models.py --config docs\eval-models.example.json
+
+# 人工介入率、自动受理率、受控 ReAct 触发率、单案耗时
+.\.venv\Scripts\python.exe scripts\intake_stats.py
 ```
 
 评测指标只来自 `samples/`（10 份自造脱敏样例、61 个标注要素）的人工标注，口径与结果见
-`docs/intake-eval.md`。样本量小，数字只用于验证链路，不代替真实业务评测。
+`docs/intake-eval.md`。样本量小且为自造数据，**这些数字不能用来支撑简历里的百分比**，只用于验证
+链路是否可复现。`EXTRACTION_MAX_WORKERS`（默认 4）控制字段组并行补抽的并发数。
 
 ## 已知边界
 

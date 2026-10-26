@@ -1,0 +1,36 @@
+{
+  "_说明": "多模型横向评测的目标清单。model 取值需在百炼/火山方舟控制台核对后修改，本文件只是模板。",
+  "_口径": "评测用『包含匹配』：标注值出现在模型输出里即算命中；模型输出值必须能在原文中找到，否则视为未提取（反幻觉）。",
+  "targets": [
+    {
+      "label": "qwen3.7-flash（当前生产）",
+      "model": "qwen3.7-flash",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    },
+    {
+      "label": "qwen3-32b",
+      "model": "qwen3-32b",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    },
+    {
+      "label": "glm",
+      "model": "glm-4.5",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    },
+    {
+      "label": "kimi",
+      "model": "kimi-k2-0905-preview",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    },
+    {
+      "label": "doubao",
+      "model": "doubao-pro-32k",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_key_env": "ARK_API_KEY"
+    }
+  ]
+}

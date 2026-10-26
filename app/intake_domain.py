@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from typing import Any
 
@@ -20,6 +22,10 @@ from app.llm_client import call_llm_json, is_llm_configured
 
 
 from app.intake_scenes import SCENE_DEFINITIONS, get_scene_definition
+
+
+EXTRACTION_MAX_WORKERS = max(1, int(os.getenv("EXTRACTION_MAX_WORKERS", "4")))
+"""字段组并行补抽的最大并发数；每组一次大模型调用。"""
 
 
 def classify_scene(
@@ -260,25 +266,57 @@ def _extract_first(blocks: list[PageBlock], patterns: tuple[str, ...]) -> tuple[
 
 
 def _enrich_fields_with_llm(scene: IntakeScene, blocks: list[PageBlock], fields: list[ExtractedField]) -> None:
-    missing = [field.field_name for field in fields if not field.value]
-    if not missing:
+    """按字段组并行补抽：每次调用只带本组 Schema，降低漏提取与字段混淆。"""
+
+    missing_by_group: dict[str, list[ExtractedField]] = {}
+    for field in fields:
+        if not field.value:
+            missing_by_group.setdefault(field.group, []).append(field)
+    if not missing_by_group:
         return
-    text = "\n".join(f"[{block.file_name} P{block.page_no} B{block.block_no}] {block.text}" for block in blocks)
+
+    with ThreadPoolExecutor(max_workers=min(EXTRACTION_MAX_WORKERS, len(missing_by_group))) as pool:
+        futures = [
+            pool.submit(_enrich_field_group, scene, group, items, blocks)
+            for group, items in missing_by_group.items()
+        ]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                continue
+
+
+def _enrich_field_group(
+    scene: IntakeScene,
+    group: str,
+    fields: list[ExtractedField],
+    blocks: list[PageBlock],
+) -> None:
+    missing = [field.field_name for field in fields]
+    text = "\n".join(
+        f"[{block.file_name} P{block.page_no} B{block.block_no}] {block.text}" for block in blocks
+    )
     try:
         response = call_llm_json(
             [
                 {
                     "role": "system",
                     "content": (
-                        "你是业务材料要素提取器。只输出 JSON，格式为 "
+                        f"你是业务材料要素提取器，只负责「{group}」这一组字段。只输出 JSON，格式为 "
                         '{"fields":[{"field_name":"...","value":"...","file_name":"...","page_no":1,"block_no":1,"confidence":0.0}]}。'
-                        "只能引用给定原文，不确定时不要填写。"
+                        "只能引用给定原文，原文里没有的字段不要猜测填写。"
                     ),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {"scene": scene.value, "missing_fields": missing, "materials": text[:16000]},
+                        {
+                            "scene": scene.value,
+                            "field_group": group,
+                            "missing_fields": missing,
+                            "materials": text[:16000],
+                        },
                         ensure_ascii=False,
                     ),
                 },

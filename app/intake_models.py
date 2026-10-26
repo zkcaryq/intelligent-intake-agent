@@ -165,6 +165,7 @@ class IntakeResult(BaseModel):
     status: Literal["自动受理", "补充材料", "人工复核", "不予受理"]
     human_review_required: bool
     graph_steps: list[str] = Field(default_factory=list)
+    duration_ms: float = 0.0
 
 
 class IntakeState(TypedDict, total=False):
@@ -172,6 +173,7 @@ class IntakeState(TypedDict, total=False):
 
     run_id: str
     request: IntakeCaseRequest
+    started_at: float
     scene: IntakeScene
     scene_confidence: float
     scene_source: str

@@ -9,10 +9,10 @@
 
 | 类别 | 状态 |
 | --- | --- |
-| 有真实实现且本地可跑 | 固定流水线、受控 ReAct、Reflection、动作白名单与轮次上限、多格式解析与页码块号、四级去重、10 类场景字段组抽取、规则与跨材料一致性核验、证据溯源、三份业务文书生成、MCP 工具、运行时自检、要素评测脚手架 |
-| 有真实实现但需要凭据才能验证 | 百炼对话 / 向量 / 重排、Zilliz 向量入库与语义召回、OSS 原件与文书存储、PostgreSQL 持久化、Redis 运行状态 |
+| 有真实实现且本地可跑 | 固定流水线、受控 ReAct、Reflection、动作白名单与轮次上限、多格式解析与页码块号、四级去重、10 类场景字段组抽取、字段组并行补抽与反幻觉校验、规则与跨材料一致性核验、证据溯源、三份业务文书生成、MCP 工具、运行时自检、要素评测与 Bad Case 导出、运行统计（人工介入率/耗时） |
+| 有真实实现但需要凭据才能验证 | 百炼对话 / 向量 / 重排、多模型横向评测、Zilliz 向量入库与语义召回、OSS 原件与文书存储、PostgreSQL 持久化、Redis 运行状态 |
 | 有代码但本机环境未验证 | 扫描件 OCR（缺 Tesseract 可执行文件与中文语言包） |
-| **未实现** | SFT + LoRA 微调、多模型横向评测、Elasticsearch、MySQL、字段并行抽取 |
+| **未实现** | SFT + LoRA 微调、Elasticsearch、MySQL |
 | **无法由本仓库证明** | 89.33%→98.67%、Macro-F1 98.69%、97.56%、98.05%、人工介入率降低 50%+、可用性 99.9% |
 
 > 本仓库不伪造以上任何指标。`docs/intake-eval.md` 里的数字是 10 份自造样例上的实测值，
@@ -71,12 +71,13 @@
 
 | 简历表述 | 实现 | 位置 |
 | --- | --- | --- |
-| 多种候选大模型横向评测 | 未实现（无评测实验） | — |
-| 最终选用 Qwen3-32B | 未实现；当前使用百炼 `qwen3.7-flash` | `app/llm_client.py` |
+| 多种候选大模型横向评测 | 评测脚手架已实现：同一批 golden set 上逐个模型跑一遍，缺 key 的目标直接跳过不填数；模型清单见 `docs/eval-models.example.json` | `app/intake_eval.py:295`、`scripts/eval_models.py` |
+| 最终选用 Qwen3-32B | 未验证（需 API key 实跑）；生产当前使用百炼 `qwen3.7-flash` | `app/llm_client.py` |
 | 字段组 Schema | 每个场景定义「字段组 / 字段名 / 正则」，数据驱动 | `app/intake_scenes.py:43` |
-| 结构化 JSON 输出 | 模型调用强制 JSON，解析失败即降级 | `app/llm_client.py` |
-| 并行抽取 | 未实现；当前按字段顺序抽取 | `app/intake_domain.py:70` |
-| 要素识别准确率 97.56% / 关键字段 98.05% | 无真实业务标注集，无法复现；本仓库只提供评测脚手架与自造样例实测值 | `scripts/eval_elements.py` |
+| 并行抽取 | 缺失字段按字段组拆分，每组一次大模型调用，线程池并行 | `app/intake_domain.py:268`、`:290` |
+| 结构化 JSON 输出 | 模型调用强制 JSON，解析失败即降级；补抽值必须能在原文中找到，否则丢弃 | `app/llm_client.py`、`app/intake_domain.py:335` |
+| 降低漏提取与字段混淆 | 每次调用只带本组 Schema，缩小候选字段集 | `app/intake_domain.py:290` |
+| 要素识别准确率 97.56% / 关键字段 98.05% | 无真实业务标注集，无法复现；本仓库只提供评测脚手架与自造样例实测值 | `scripts/eval_elements.py`、`docs/intake-eval.md` |
 
 ### 2.5 「规则校验 + 语义核验 + MCP + 定向复核」
 
@@ -106,8 +107,15 @@
 .\.venv\Scripts\python.exe -m compileall app scripts tests
 .\.venv\Scripts\python.exe -m pytest -q
 
-# 要素识别评测（只读，不写库）
+# 要素识别评测（只读，不写库）+ Bad Case 清单
 .\.venv\Scripts\python.exe scripts\eval_elements.py
+.\.venv\Scripts\python.exe scripts\eval_elements.py --write docs\intake-eval.md --badcase-out docs\intake-badcases.md
+
+# 候选模型横向评测（需 .env 里有对应 API key，缺 key 的目标自动跳过）
+.\.venv\Scripts\python.exe scripts\eval_models.py --config docs\eval-models.example.json
+
+# 运行统计：人工介入率、自动受理率、ReAct 触发率、单案耗时
+.\.venv\Scripts\python.exe scripts\intake_stats.py
 
 # 依赖连通性（不会打印密钥）
 .\.venv\Scripts\python.exe scripts\check_intake_runtime.py
@@ -126,12 +134,12 @@
 | 现在写的 | 建议改成 | 原因 |
 | --- | --- | --- |
 | SFT + LoRA 微调，Accuracy 89.33%→98.67%，Macro-F1 98.69% | 删除该条，或改为「参与材料分类规则与难例样本治理」 | 无训练环境与数据，仓库不提供实现 |
-| 对豆包、Qwen、Kimi、GLM 横向评测，最终选用 Qwen3-32B | 删除，或改为「按百炼模型完成抽取链路适配」 | 无横评实验记录 |
+| 对豆包、Qwen、Kimi、GLM 横向评测，最终选用 Qwen3-32B | 保留「横向评测」这件事，但结论模型要按 `scripts/eval_models.py` 实跑结果写 | 评测脚手架已就绪，缺 API key 才能出数字 |
 | 要素识别准确率 97.56%、关键字段 98.05% | 改为实测值并注明样本量，或删除 | 无真实业务标注集 |
 | Elasticsearch | Zilliz Cloud 向量检索 + 关键词索引 | 实际实现 |
 | MySQL | PostgreSQL | 实际实现 |
-| 人工介入率降低 50%+、可用性 99.9% | 删除，或改为「设计上支持自动受理 / 补充材料 / 人工复核三态收敛」 | 无线上数据 |
-| 字段组 Schema + 并行抽取 | 字段组 Schema + 分组抽取 | 当前为顺序抽取 |
+| 人工介入率降低 50%+、可用性 99.9% | 改为 `scripts/intake_stats.py` 跑出的真实人工介入率；可用性需线上监控 | 无线上数据 |
+| 字段组 Schema + 并行抽取 | 保留，已实现 | `app/intake_domain.py:268` |
 
 ---
 
@@ -149,3 +157,8 @@
    真实查询。现在每次返回都带 `backend=remote / local_sample`，失败直接抛错让人工接管。
 5. **为什么场景用注册表而不是 if-else**：业务类型会持续增加；把关键词、字段组、必填项收敛到
    `SCENE_DEFINITIONS` 后，新增一类业务只改配置，分类/抽取/校验/文书四条链路自动生效。
+6. **为什么补抽按字段组并行而不是一次问全部字段**：一次问十几个字段时，模型更容易把值填到相邻
+   字段上（字段混淆），也更容易在长材料里漏字段。按字段组拆开后每次只给本组 Schema，组间并行
+   把串行延迟压回来；同时补抽值必须能在原文里逐字找到才接受，把幻觉挡在写库之前。
+7. **为什么模型横评要"缺 key 就跳过"**：选型表如果混进推测数字，整张表就不可信了。现在的做法是
+   未配置密钥的目标显式标注跳过原因，表里只留实跑结果。

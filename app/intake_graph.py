@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -196,6 +197,7 @@ def build_result_node(state: IntakeState) -> IntakeState:
 
 def persist_result_node(state: IntakeState) -> IntakeState:
     result = state["result"]
+    result.duration_ms = round((time.perf_counter() - state.get("started_at", time.perf_counter())) * 1000, 1)
     persistence: dict[str, Any] = {}
     document_storage = []
     for document in result.documents:
@@ -270,7 +272,9 @@ intake_graph = build_intake_graph()
 
 def process_intake_case(request: IntakeCaseRequest) -> IntakeResult:
     run_id = uuid4().hex
-    state = intake_graph.invoke({"run_id": run_id, "request": request, "graph_steps": []})
+    state = intake_graph.invoke(
+        {"run_id": run_id, "request": request, "started_at": time.perf_counter(), "graph_steps": []}
+    )
     return state["result"]
 
 
