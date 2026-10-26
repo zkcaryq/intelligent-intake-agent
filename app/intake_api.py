@@ -103,6 +103,6 @@ def intake_config() -> dict[str, Any]:
 
 @router.get("/health")
 def intake_health() -> dict[str, Any]:
-    """只读检查 PostgreSQL、Redis 和 Zilliz 的实际连通性。"""
+    """只读检查 PostgreSQL、Redis、Zilliz、Elasticsearch、OSS 与 OCR 的实际连通性。"""
 
     return check_intake_runtime()

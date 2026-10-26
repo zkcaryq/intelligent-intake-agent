@@ -17,7 +17,7 @@
 | 10 类业务场景的字段组 Schema（数据驱动） | `app/intake_scenes.py:43` |
 | 字段组并行补抽 + 原文逐字校验挡幻觉 | `app/intake_domain.py:268`、`app/intake_domain.py:290` |
 | 规则校验 + 跨材料一致性 + 大模型语义核验 | `app/intake_domain.py` |
-| 证据定位：Zilliz 稠密向量 + BM25 稀疏双路召回，RRF 融合 | `app/intake_integrations.py:44` |
+| 证据定位：ES 全文检索 + Zilliz 向量召回双路，RRF 融合 | `app/es_client.py`、`app/intake_integrations.py:44`、`:269` |
 | 扫描件 OCR：百炼多模态优先，本机 Tesseract 兜底 | `app/ocr_client.py` |
 | MCP 暴露工单、供应商档案、原文定位工具 | `scripts/intake_mcp_server.py` |
 | 要素评测 / Bad Case / 多模型横评 / 运行统计 | `scripts/eval_elements.py`、`scripts/eval_models.py`、`scripts/intake_stats.py` |
@@ -40,7 +40,7 @@
 - Python 3.12、FastAPI、Pydantic
 - LangGraph 固定流水线、LangChain StructuredTool、MCP
 - 阿里云百炼：`qwen3.7-flash`（关闭思考模式）、`qwen3.7-text-embedding`、`qwen3-rerank`、`qwen-vl-ocr`
-- PostgreSQL（结构化结果）、Redis（运行状态）、Zilliz Cloud（材料向量 + BM25 检索）、阿里云 OSS（原件与文书）
+- PostgreSQL（结构化结果）、Redis（运行状态）、Elasticsearch（BM25 全文检索）、Zilliz Cloud（稠密向量语义召回）、阿里云 OSS（原件与文书）
 - PyMuPDF / pypdf / python-docx 解析，OCR 走云端多模态模型，本机 Tesseract 作为离线兜底
 
 ## 本地启动
@@ -63,7 +63,7 @@ copy .env.example .env
 .\.venv\Scripts\python.exe scripts\check_intake_runtime.py
 ```
 
-首次配置 Zilliz 后建集合（schema 变更后用 `--recreate` 重建）：
+首次配置 Zilliz / Elasticsearch 后建集合与索引（schema 变更后加 `--recreate`）：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\intake_collection.py --recreate
@@ -117,8 +117,10 @@ MCP Server：
 
 - **OCR**：默认优先百炼多模态 `qwen-vl-ocr`，需要 `VL_API_KEY`；本机装了 Tesseract 时可设
   `OCR_BACKEND=tesseract` 完全离线。两者都不可用时 `/intake/health` 会报告 `active_backend=unavailable`。
-- **检索**：不使用 Elasticsearch。原文定位与疑点复核由 Zilliz 的稠密向量 + BM25 稀疏向量双路召回完成，
-  需要 Zilliz 集群为 Milvus 2.5+；不支持时自动降级为纯稠密召回并在 `/intake/health` 报 `bm25_ready=false`。
+- **检索**：Elasticsearch 负责 BM25 全文检索（型号、单号、条款号这类必须字面命中的内容），
+  Zilliz 负责稠密向量语义召回，两路结果用 RRF 融合后交给重排。中文分词优先用 `ik_max_word` /
+  `ik_smart`，插件缺失时自动退回标准分析器并在 `/intake/health` 报告实际生效的分词器。
+  两边都没配置时退回进程内关键词检索，流程仍可跑通但跨进程无法定位原文。
 - **SFT / LoRA**：未实现。本仓库不含训练代码、训练数据或微调指标。
 - **本地样例**：`samples/` 全部为自造数据，不含任何真实业务材料或个人敏感信息。
 - 进程内关键词索引只在当前进程有效；跨进程证据定位需要配置 Zilliz。

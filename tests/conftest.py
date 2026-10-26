@@ -22,6 +22,10 @@ for name in (
     "OSS_BUCKET",
     "OSS_ACCESS_KEY_ID",
     "OSS_ACCESS_KEY_SECRET",
+    "ES_URL",
+    "ES_API_KEY",
+    "ES_USERNAME",
+    "ES_PASSWORD",
     "INTAKE_ARCHIVE_API_BASE_URL",
     "INTAKE_ARCHIVE_API_TOKEN",
 ):

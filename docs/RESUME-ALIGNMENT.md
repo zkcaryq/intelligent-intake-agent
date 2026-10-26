@@ -10,7 +10,7 @@
 | 类别 | 状态 |
 | --- | --- |
 | 有真实实现且本地可跑 | 固定流水线、受控 ReAct、Reflection、动作白名单与轮次上限、多格式解析与页码块号、四级去重、10 类场景字段组抽取、字段组并行补抽与反幻觉校验、规则与跨材料一致性核验、证据溯源、三份业务文书生成、MCP 工具、运行时自检、要素评测与 Bad Case 导出、运行统计（人工介入率/耗时） |
-| 有真实实现但需要凭据才能验证 | 百炼对话 / 向量 / 重排 / VL-OCR、多模型横向评测、Zilliz 稠密+BM25 混合召回、OSS 原件与文书存储、PostgreSQL 持久化、Redis 运行状态 |
+| 有真实实现但需要凭据/部署才能验证 | 百炼对话 / 向量 / 重排 / VL-OCR、多模型横向评测、Elasticsearch BM25 全文检索、Zilliz 向量召回、OSS 原件与文书存储、PostgreSQL 持久化、Redis 运行状态 |
 | **未实现** | SFT + LoRA 微调 |
 | **无法由本仓库证明** | 89.33%→98.67%、Macro-F1 98.69%、97.56%、98.05%、人工介入率降低 50%+、可用性 99.9% |
 
@@ -28,7 +28,7 @@
 | LangGraph | 固定流水线状态图 | `app/intake_graph.py:233` | 一致 |
 | MCP | FastMCP Server，stdio + Streamable HTTP 双传输 | `scripts/intake_mcp_server.py` | 一致 |
 | LLaMA-Factory / LoRA | 无 | — | **简历需删** |
-| Elasticsearch | Zilliz 稠密向量 + BM25 稀疏双路召回（RRF 融合），一个引擎覆盖语义与关键词 | `app/intake_integrations.py:44`、`:117`、`:269` | **简历需改** |
+| Elasticsearch | ES BM25 全文检索（中文优先 ik 分词，缺插件自动退回标准分词并上报），与 Zilliz 稠密召回 RRF 融合 | `app/es_client.py`、`app/intake_integrations.py:269` | 一致（需部署实例） |
 | MySQL | PostgreSQL（缺失时回落 SQLite） | `app/intake_integrations.py:198` | **简历需改** |
 | Redis | 运行结果短期缓存，缺失时退回进程内 | `app/intake_integrations.py:303` | 一致 |
 
@@ -87,7 +87,7 @@
 | 证据关联 | 每个字段与问题都绑定 `EvidenceRef` | `app/intake_models.py:83` |
 | 跨材料一致性检查 | 同一主体在不同材料中的名称冲突检测 | `app/intake_domain.py:304` |
 | MCP 接入工单档案查询 | 三个 MCP 工具；配置 `INTAKE_ARCHIVE_API_BASE_URL` 后直连外部系统，未配置时返回 `backend=local_sample` | `scripts/intake_mcp_server.py`、`app/intake_tools.py:46`、`:84` |
-| Elasticsearch 疑点定向复核与原文定位 | 不用 ES：Zilliz 服务端中文分词生成 BM25 稀疏向量，与稠密向量双路召回后 RRF 融合；集群不支持时自动降级为纯稠密并如实上报 | `app/intake_integrations.py:117`、`:185` |
+| Elasticsearch 疑点定向复核与原文定位 | ES BM25 全文检索（`case_no` filter + `text` match）与 Zilliz 稠密召回双路，RRF 融合后交给百炼重排 | `app/es_client.py`、`app/intake_integrations.py:269` |
 
 ### 2.6 「量化成果」
 
@@ -135,7 +135,6 @@
 | SFT + LoRA 微调，Accuracy 89.33%→98.67%，Macro-F1 98.69% | 删除该条，或改为「参与材料分类规则与难例样本治理」 | 无训练环境与数据，仓库不提供实现 |
 | 对豆包、Qwen、Kimi、GLM 横向评测，最终选用 Qwen3-32B | 保留「横向评测」这件事，但结论模型要按 `scripts/eval_models.py` 实跑结果写 | 评测脚手架已就绪，缺 API key 才能出数字 |
 | 要素识别准确率 97.56%、关键字段 98.05% | 改为实测值并注明样本量，或删除 | 无真实业务标注集 |
-| Elasticsearch | Zilliz 稠密 + BM25 稀疏混合召回 | 实际实现，且能力等价 |
 | MySQL | PostgreSQL | 实际实现 |
 | 人工介入率降低 50%+、可用性 99.9% | 改为 `scripts/intake_stats.py` 跑出的真实人工介入率；可用性需线上监控 | 无线上数据 |
 | 字段组 Schema + 并行抽取 | 保留，已实现 | `app/intake_domain.py:268` |
@@ -161,10 +160,11 @@
    把串行延迟压回来；同时补抽值必须能在原文里逐字找到才接受，把幻觉挡在写库之前。
 7. **为什么模型横评要"缺 key 就跳过"**：选型表如果混进推测数字，整张表就不可信了。现在的做法是
    未配置密钥的目标显式标注跳过原因，表里只留实跑结果。
-8. **为什么用 Zilliz 的 BM25 而不是 Elasticsearch**：ES 的本行是倒排索引全文检索，向量检索是后加的；
-   Milvus 2.5 起稀疏向量 + BM25 是原生能力，稠密和稀疏存在同一个 collection、同一次查询里 RRF 融合。
-   少一套 JVM 服务（本机内存也不允许再跑一个 ES），运维面和一致性都更简单。代价是 BM25 的聚合统计
-   能力不如 ES，但受理场景只需要"按问题找回原文块"，用不到聚合。
+8. **为什么 ES 和向量库并存**：受理材料里的关键定位目标是**必须字面命中**的实体——订单号、运单号、
+   统一社会信用代码、条款编号。纯向量召回对这类精确串最容易"语义相近但号码不对"，而这正是 ES 的
+   BM25 强项；反过来用户描述故障现象时措辞多样，靠关键词会漏，交给稠密向量。两路结果用 RRF 融合，
+   只信任名次不信任原始分数（BM25 无上界、余弦在 [0,1]，跨引擎比较没有意义）。
+   Milvus 2.5 的稀疏向量其实也能顶替 ES，但 ES 还有高亮、聚合和成熟的运维生态，生产上更常见。
 9. **为什么 OCR 默认走云端多模态而不是本机 Tesseract**：受理材料里发票、营业执照、带章印的扫描件
    居多，传统 OCR 对版式和印章的鲁棒性差；`qwen-vl-ocr` 这类多模态模型对表格与字段对齐明显更稳，
    而且不用在 Windows 上装系统级引擎。保留 `OCR_BACKEND=tesseract` 是为了私有化交付时能完全离线——

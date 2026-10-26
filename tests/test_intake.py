@@ -145,8 +145,9 @@ def test_intake_config_matches_actual_infrastructure_and_bailian_models():
     body = response.json()
 
     assert response.status_code == 200
-    assert set(body["integrations"]) == {"postgresql", "redis", "zilliz", "oss"}
-    assert body["integrations"]["zilliz"]["role"].startswith("全部受理材料切块向量")
+    assert set(body["integrations"]) == {"postgresql", "redis", "zilliz", "elasticsearch", "oss"}
+    assert body["integrations"]["zilliz"]["role"].startswith("材料块稠密向量")
+    assert body["integrations"]["elasticsearch"]["role"].startswith("材料块 BM25")
     assert body["models"]["chat"]["provider"] == "dashscope_bailian"
     assert body["models"]["chat"]["model"] == "qwen3.7-flash"
     assert body["models"]["chat"]["enable_thinking"] is False
@@ -154,7 +155,7 @@ def test_intake_config_matches_actual_infrastructure_and_bailian_models():
     assert body["models"]["reranker"]["model"] == "qwen3-rerank"
 
 
-def test_intake_health_declares_zilliz_as_only_vector_backend():
+def test_intake_health_reports_retrieval_backends():
     response = client.get("/intake/health")
     body = response.json()
 
@@ -162,6 +163,7 @@ def test_intake_health_declares_zilliz_as_only_vector_backend():
     assert body["vector_backend"] == "zilliz"
     assert body["checks"]["postgresql"]["fallback"] == "sqlite"
     assert body["checks"]["zilliz"]["configured"] is False
+    assert body["checks"]["elasticsearch"]["configured"] is False
 
 
 def test_scene_registry_matches_samples_and_field_schema():

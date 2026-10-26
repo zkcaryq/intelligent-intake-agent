@@ -12,6 +12,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from app.embedding_client import EMBEDDING_FALLBACK_DIMENSION, embed_texts, is_embedding_configured
+from app.es_client import ES_INDEX, ES_URL, elasticsearch_evidence_store
 from app.intake_models import EvidenceRef, GeneratedDocument, IntakeResult, MaterialInput, PageBlock
 from app.redaction import mask_config_value, redact_sensitive_text
 from app.reranker_client import rerank_documents
@@ -249,6 +250,26 @@ class ZillizMaterialVectorStore:
         self.bm25_error = ""
 
 
+def _rrf_merge(routes: list[list[EvidenceRef]], limit: int, k: int = 60) -> list[EvidenceRef]:
+    """多路召回的 Reciprocal Rank Fusion：只信任名次，不跨引擎比较原始分数。"""
+
+    scores: dict[tuple[str, int, int], float] = {}
+    kept: dict[tuple[str, int, int], EvidenceRef] = {}
+    for hits in routes:
+        for rank, evidence in enumerate(hits):
+            key = (evidence.material_id, evidence.page_no, evidence.block_no)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+            kept.setdefault(key, evidence)
+    ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]
+    merged: list[EvidenceRef] = []
+    total = max(len(ordered), 1)
+    for position, (key, _) in enumerate(ordered):
+        evidence = kept[key].model_copy()
+        evidence.score = round(1.0 - position / (total + 1), 4)
+        merged.append(evidence)
+    return merged
+
+
 def _hits_to_evidence(hits: list[dict[str, Any]]) -> list[EvidenceRef]:
     output: list[EvidenceRef] = []
     for hit in hits:
@@ -267,39 +288,83 @@ def _hits_to_evidence(hits: list[dict[str, Any]]) -> list[EvidenceRef]:
 
 
 class EvidenceIndex:
-    """证据定位入口：Zilliz 稠密 + BM25 混合召回；未配置或调用失败时退回进程内关键词检索。"""
+    """证据定位入口：ES 全文检索 + Zilliz 向量召回双路，RRF 融合后交给重排。
+
+    两路都没配置时退回进程内关键词检索，保证零凭据也能跑完整流程。
+    """
 
     def __init__(self) -> None:
         self._blocks_by_case: dict[str, list[PageBlock]] = {}
 
     def index(self, case_no: str, blocks: list[PageBlock]) -> dict[str, Any]:
         self._blocks_by_case[case_no] = list(blocks)
-        if not intake_vector_store.configured:
-            return {"backend": "local", "indexed": len(blocks), "reason": "Zilliz 或百炼向量模型未配置"}
-        try:
-            indexed = intake_vector_store.index(case_no, blocks)
-            return {
-                "backend": "zilliz",
-                "indexed": indexed,
-                "retrieval": "hybrid_bm25" if intake_vector_store.bm25_enabled else "dense_only",
-                "bm25_error": intake_vector_store.bm25_error,
-            }
-        except Exception as exc:
-            return {
-                "backend": "local_fallback",
-                "indexed": len(blocks),
-                "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}"),
-            }
+        backends: list[dict[str, Any]] = []
 
-    def search(self, case_no: str, query: str, limit: int = 5) -> list[EvidenceRef]:
+        if elasticsearch_evidence_store.configured:
+            try:
+                backends.append(
+                    {
+                        "backend": "elasticsearch",
+                        "indexed": elasticsearch_evidence_store.index(case_no, blocks),
+                        "analyzer": elasticsearch_evidence_store.analyzer,
+                    }
+                )
+            except Exception as exc:
+                backends.append(
+                    {
+                        "backend": "elasticsearch",
+                        "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}")[:300],
+                    }
+                )
+
         if intake_vector_store.configured:
             try:
-                results = intake_vector_store.search(case_no, query, limit)
-                if results:
-                    return _rerank_evidence(query, results, limit)
+                backends.append(
+                    {
+                        "backend": "zilliz",
+                        "indexed": intake_vector_store.index(case_no, blocks),
+                        "retrieval": "hybrid_bm25" if intake_vector_store.bm25_enabled else "dense_only",
+                        "bm25_error": intake_vector_store.bm25_error,
+                    }
+                )
+            except Exception as exc:
+                backends.append(
+                    {"backend": "zilliz", "error": redact_sensitive_text(f"{type(exc).__name__}: {exc}")[:300]}
+                )
+
+        succeeded = [item for item in backends if "indexed" in item]
+        if not succeeded:
+            return {
+                "backend": "local",
+                "indexed": len(blocks),
+                "reason": "未配置 Elasticsearch 与 Zilliz，使用进程内关键词检索",
+                "backends": backends,
+            }
+        return {
+            "backend": "+".join(str(item["backend"]) for item in succeeded),
+            "indexed": max(int(item["indexed"]) for item in succeeded),
+            "backends": backends,
+        }
+
+    def search(self, case_no: str, query: str, limit: int = 5) -> list[EvidenceRef]:
+        routes: list[list[EvidenceRef]] = []
+        if elasticsearch_evidence_store.configured:
+            try:
+                hits = elasticsearch_evidence_store.search(case_no, query, limit)
+                if hits:
+                    routes.append(hits)
             except Exception:
                 pass
-        return self._local_search(case_no, query, limit)
+        if intake_vector_store.configured:
+            try:
+                hits = intake_vector_store.search(case_no, query, limit)
+                if hits:
+                    routes.append(hits)
+            except Exception:
+                pass
+        if not routes:
+            return self._local_search(case_no, query, limit)
+        return _rerank_evidence(query, _rrf_merge(routes, limit), limit)
 
     def _local_search(self, case_no: str, query: str, limit: int) -> list[EvidenceRef]:
         tokens = [token for token in re.split(r"[\s，。、；;]+", query) if token]
@@ -494,7 +559,13 @@ def get_intake_integration_status() -> dict[str, Any]:
             "connection_set": bool(MILVUS_ENDPOINT and MILVUS_TOKEN),
             "endpoint": mask_config_value(MILVUS_ENDPOINT),
             "collection": MILVUS_COLLECTION,
-            "role": "全部受理材料切块向量、语义检索与证据定位",
+            "role": "材料块稠密向量、语义召回",
+        },
+        "elasticsearch": {
+            "configured": bool(ES_URL),
+            "url": mask_config_value(ES_URL),
+            "index": ES_INDEX,
+            "role": "材料块 BM25 全文检索与原文定位",
         },
         "oss": {
             "configured": intake_object_storage.configured,
@@ -512,6 +583,7 @@ def check_intake_runtime() -> dict[str, Any]:
         "postgresql": _check_postgresql(),
         "redis": _check_redis(),
         "zilliz": _check_zilliz(),
+        "elasticsearch": _check_elasticsearch(),
         "oss": _check_oss(),
         "ocr": _check_ocr(),
     }
@@ -520,6 +592,7 @@ def check_intake_runtime() -> dict[str, Any]:
     full_ready = bool(
         demo_ready
         and checks["zilliz"].get("ready") is True
+        and checks["elasticsearch"].get("reachable") is True
         and checks["oss"].get("reachable") is True
         and checks["ocr"].get("ready") is True
     )
@@ -603,6 +676,12 @@ def _check_ocr() -> dict[str, Any]:
         "ready": status["active_backend"] != "unavailable",
         **status,
     }
+
+
+def _check_elasticsearch() -> dict[str, Any]:
+    """只读检查 ES 集群健康、索引与生效的分词器。"""
+
+    return elasticsearch_evidence_store.status()
 
 
 def _check_oss() -> dict[str, Any]:
