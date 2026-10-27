@@ -46,7 +46,7 @@
 ## 本地启动
 
 ```powershell
-cd D:\faceexam\intelligent-ticket-assistant
+cd D:\faceexam\intelligent-intake-agent
 uv venv .venv
 uv pip install --python .\.venv\Scripts\python.exe -r requirements.txt
 copy .env.example .env
