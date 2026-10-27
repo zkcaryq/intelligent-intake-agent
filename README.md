@@ -116,7 +116,7 @@ MCP Server：
 评测指标只来自 `samples/`（10 份自造脱敏样例、61 个标注要素）与 `samples/classify/`（20 条真实措辞
 分类语料）的人工标注，口径与结果见 `docs/intake-eval.md`、`docs/intake-classification.md`。
 当前实测：分类 Accuracy 80.00%、Macro-F1 0.8457、规则直判覆盖率 83.33%；要素抽取 61/61。
-样本量小且为自造数据，**这些数字不能用来支撑简历里的百分比**，只用于验证链路是否可复现。
+样本量小且为自造数据，仅用于回归验证链路是否可复现，不作为业务指标引用。
 `EXTRACTION_MAX_WORKERS`（默认 4）控制字段组并行补抽的并发数，
 `SCENE_AMBIGUITY_MARGIN`（默认 1）控制分类的直判门槛。
 
