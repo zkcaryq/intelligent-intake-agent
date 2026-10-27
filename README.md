@@ -10,14 +10,14 @@
 
 | 能力 | 实现位置 |
 | --- | --- |
-| 固定流水线 + 受控 ReAct + Reflection | `app/intake_graph.py:233`、`app/intake_graph.py:101` |
+| 固定流水线 + 受控 ReAct + Reflection | `app/intake_graph.py:235`、`app/intake_graph.py:102` |
 | 动作白名单与最多 3 轮调用 | `app/intake_tools.py:12`、`app/intake_tools.py:291` |
-| Word / PDF / 扫描件解析，保留页码与块号 | `app/material_parser.py:20`、`app/material_parser.py:114` |
+| Word / PDF / 扫描件解析，保留页码与块号 | `app/material_parser.py:19`、`app/material_parser.py:115` |
 | SHA256 / SimHash / 向量 / LCS 四级去重 | `app/material_dedup.py:17` |
 | 10 类业务场景的字段组 Schema（数据驱动） | `app/intake_scenes.py:43` |
-| 字段组并行补抽 + 原文逐字校验挡幻觉 | `app/intake_domain.py:268`、`app/intake_domain.py:290` |
+| 字段组并行补抽 + 原文逐字校验挡幻觉 | `app/intake_domain.py:275`、`app/intake_domain.py:297` |
 | 规则校验 + 跨材料一致性 + 大模型语义核验 | `app/intake_domain.py` |
-| 证据定位：ES 全文检索 + Zilliz 向量召回双路，RRF 融合 | `app/es_client.py`、`app/intake_integrations.py:44`、`:269` |
+| 证据定位：ES 全文检索 + Zilliz 向量召回双路，RRF 融合 | `app/es_client.py`、`app/intake_integrations.py:42`、`:269` |
 | 扫描件 OCR：百炼多模态优先，本机 Tesseract 兜底 | `app/ocr_client.py` |
 | MCP 暴露工单、供应商档案、原文定位工具 | `scripts/intake_mcp_server.py` |
 | 要素评测 / Bad Case / 多模型横评 / 运行统计 | `scripts/eval_elements.py`、`scripts/eval_models.py`、`scripts/intake_stats.py` |
@@ -99,6 +99,10 @@ MCP Server：
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 
+# 材料分类评测：Accuracy / Macro-F1 / 覆盖率 / 易混淆对
+.\.venv\Scripts\python.exe scripts\eval_classification.py --write docs\intake-classification.md
+.\.venv\Scripts\python.exe scripts\eval_classification.py --sweep 1,2,3   # 比较直判门槛的操作点
+
 # 要素识别准确率 + Bad Case 清单
 .\.venv\Scripts\python.exe scripts\eval_elements.py --write docs\intake-eval.md --badcase-out docs\intake-badcases.md
 
@@ -109,9 +113,12 @@ MCP Server：
 .\.venv\Scripts\python.exe scripts\intake_stats.py
 ```
 
-评测指标只来自 `samples/`（10 份自造脱敏样例、61 个标注要素）的人工标注，口径与结果见
-`docs/intake-eval.md`。样本量小且为自造数据，**这些数字不能用来支撑简历里的百分比**，只用于验证
-链路是否可复现。`EXTRACTION_MAX_WORKERS`（默认 4）控制字段组并行补抽的并发数。
+评测指标只来自 `samples/`（10 份自造脱敏样例、61 个标注要素）与 `samples/classify/`（20 条真实措辞
+分类语料）的人工标注，口径与结果见 `docs/intake-eval.md`、`docs/intake-classification.md`。
+当前实测：分类 Accuracy 80.00%、Macro-F1 0.8457、规则直判覆盖率 83.33%；要素抽取 61/61。
+样本量小且为自造数据，**这些数字不能用来支撑简历里的百分比**，只用于验证链路是否可复现。
+`EXTRACTION_MAX_WORKERS`（默认 4）控制字段组并行补抽的并发数，
+`SCENE_AMBIGUITY_MARGIN`（默认 1）控制分类的直判门槛。
 
 ## 已知边界
 

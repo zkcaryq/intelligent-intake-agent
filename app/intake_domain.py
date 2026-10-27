@@ -27,6 +27,13 @@ from app.intake_scenes import SCENE_DEFINITIONS, get_scene_definition
 EXTRACTION_MAX_WORKERS = max(1, int(os.getenv("EXTRACTION_MAX_WORKERS", "4")))
 """字段组并行补抽的最大并发数；每组一次大模型调用。"""
 
+SCENE_RULE_MIN_SCORE = int(os.getenv("SCENE_RULE_MIN_SCORE", "2"))
+SCENE_AMBIGUITY_MARGIN = int(os.getenv("SCENE_AMBIGUITY_MARGIN", "1"))
+"""规则直判门槛：最高分至少这么多、且领先第二名这么多，才敢不问大模型直接判。
+
+调高会降低覆盖率但把误判变成拒判（转人工），用 ``scripts/eval_classification.py --sweep`` 选操作点。
+"""
+
 
 def classify_scene(
     request: IntakeCaseRequest,
@@ -44,7 +51,7 @@ def classify_scene(
     ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     best_scene, best_score = ordered[0]
     second_score = ordered[1][1]
-    if best_score >= 2 and best_score > second_score:
+    if best_score >= SCENE_RULE_MIN_SCORE and best_score - second_score >= SCENE_AMBIGUITY_MARGIN:
         confidence = min(0.96, 0.68 + best_score * 0.04)
         return best_scene, confidence, "rule"
     if is_llm_configured():
@@ -68,8 +75,8 @@ def classify_scene(
             return scene, confidence, "llm"
         except (ValueError, TypeError, KeyError, RuntimeError):
             pass
-    if best_score:
-        return best_scene, 0.55, "rule"
+    # 规则领先不足即视为边界样本：大模型也判不出时拒判为「无法判断」，
+    # 由 Reflection 转人工，不用错误场景的 Schema 硬抽字段。
     return IntakeScene.UNKNOWN, 0.0, "rule"
 
 
