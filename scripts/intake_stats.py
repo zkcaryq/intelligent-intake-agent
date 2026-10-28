@@ -22,14 +22,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.intake_integrations import INTAKE_DATABASE_URL, INTAKE_SQLITE_PATH  # noqa: E402
+from app.intake_integrations import INTAKE_DATABASE_URL, INTAKE_SQLITE_PATH, IntakeRunRepository  # noqa: E402
 
 
 def _load_rows() -> list[dict]:
     if INTAKE_DATABASE_URL:
-        import psycopg
-
-        with psycopg.connect(INTAKE_DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")) as connection:
+        # 复用应用的连接入口，DSN 前缀归一化只有一处实现
+        with IntakeRunRepository._postgres_connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT status, result_json FROM intake_case_runs")
                 rows = cursor.fetchall()

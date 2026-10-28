@@ -173,23 +173,96 @@ def _evidence(material_id: str, page_no: int, block_no: int) -> EvidenceRef:
     )
 
 
-def test_es_index_falls_back_to_standard_analyzer_without_ik(monkeypatch):
+def test_es_index_uses_cjk_bigram_when_ik_plugin_missing(monkeypatch):
+    """没装 ik 插件时用 ES 自带 cjk_bigram 把汉字切成二元组，而不是退回单字切分。"""
+
     store = ElasticsearchEvidenceStore()
-    calls: list[tuple[str, dict | None]] = []
+    bodies: list[dict | None] = []
 
     def fake_request(method, path, *, body=None, **kwargs):
-        calls.append((path, body))
-        if len(calls) == 1:
-            return SimpleNamespace(
-                status_code=400, text="analyzer [ik_max_word] not found", json=lambda: {}
-            )
-        return SimpleNamespace(status_code=200, text="", json=lambda: {"acknowledged": True})
+        if method == "PUT":
+            bodies.append(body)
+            if body["mappings"]["properties"]["text"].get("analyzer") == "ik_max_word":
+                return SimpleNamespace(
+                    status_code=400, text="analyzer [ik_max_word] not found", json=lambda: {}
+                )
+            return SimpleNamespace(status_code=200, text="", json=lambda: {"acknowledged": True})
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {
+                "intake_material_blocks": {
+                    "mappings": {"properties": {"text": {"type": "text", "analyzer": "cjk_bigram"}}}
+                }
+            },
+        )
+
+    monkeypatch.setattr(store, "_request", fake_request)
+    store._ensure_index()
+
+    assert store.analyzer == "cjk_bigram"
+    assert len(bodies) == 2
+    assert bodies[1]["settings"]["analysis"]["analyzer"]["cjk_bigram"] == {
+        "type": "custom",
+        "tokenizer": "standard",
+        "filter": ["cjk_bigram"],
+    }
+
+
+def test_es_index_falls_back_to_standard_when_cjk_bigram_rejected(monkeypatch):
+    """极端情况下（自建精简镜像连 cjk_bigram 过滤器都没有）才退回 standard。"""
+
+    store = ElasticsearchEvidenceStore()
+    bodies: list[dict | None] = []
+
+    def fake_request(method, path, *, body=None, **kwargs):
+        if method == "PUT":
+            bodies.append(body)
+            if body["mappings"]["properties"]["text"].get("analyzer"):
+                return SimpleNamespace(
+                    status_code=400, text=f"analyzer [{body['mappings']['properties']['text']['analyzer']}] not found", json=lambda: {}
+                )
+            return SimpleNamespace(status_code=200, text="", json=lambda: {"acknowledged": True})
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"intake_material_blocks": {"mappings": {"properties": {"text": {"type": "text"}}}}},
+        )
 
     monkeypatch.setattr(store, "_request", fake_request)
     store._ensure_index()
 
     assert store.analyzer == "standard"
-    assert calls[1][1]["mappings"]["properties"]["text"] == {"type": "text"}
+    assert len(bodies) == 3
+    assert bodies[2]["mappings"]["properties"]["text"] == {"type": "text"}
+
+
+def test_es_analyzer_is_read_back_from_existing_index_mapping(monkeypatch):
+    """索引已存在时也要读回 mapping 里的分词器，不能凭假设标成 ik。"""
+
+    store = ElasticsearchEvidenceStore()
+
+    def fake_request(method, path, *, body=None, **kwargs):
+        if method == "PUT":
+            return SimpleNamespace(
+                status_code=400,
+                text="resource_already_exists_exception: index [intake_material_blocks] already exists",
+                json=lambda: {"error": {"type": "resource_already_exists_exception"}},
+            )
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {
+                "intake_material_blocks": {
+                    "mappings": {"properties": {"text": {"type": "text", "analyzer": "ik_max_word"}}}
+                }
+            },
+        )
+
+    monkeypatch.setattr(store, "_request", fake_request)
+    store._ensure_index()
+
+    assert store.analyzer == "ik_max_word"
 
 
 def test_es_search_normalizes_bm25_scores_by_top_hit(monkeypatch):

@@ -123,13 +123,7 @@ class ElasticsearchEvidenceStore:
         try:
             health = self._json(self._request("GET", "/_cluster/health"))
             exists = self._request("GET", f"/{ES_INDEX}", ok_404=True).status_code == 200
-            analyzer = ""
-            if exists:
-                detail = self._json(self._request("GET", f"/{ES_INDEX}/_settings"))
-                settings = detail.get(ES_INDEX, {}).get("settings", {}).get("index", {})
-                analyzer = settings.get("analysis", {}).get("analyzer", {}).get("ik", {}).get("tokenizer", "") or (
-                    "ik_max_word" if "ik_max_word" in json.dumps(detail) else "standard"
-                )
+            analyzer = self._effective_analyzer() if exists else ""
             return {
                 "configured": True,
                 "reachable": True,
@@ -158,16 +152,22 @@ class ElasticsearchEvidenceStore:
     def _ensure_index(self) -> None:
         if self.analyzer:
             return
-        response = self._request("PUT", f"/{ES_INDEX}", body=_mappings("ik_max_word", "ik_smart"), ok_400=True)
-        if response.status_code == 400 and "analyzer" in response.text.lower():
-            # 没装 ik 插件时退回标准分析器，中文按单字切分仍可检索
-            response = self._request("PUT", f"/{ES_INDEX}", body=_mappings(None, None))
-            self.analyzer = "standard"
+        error: dict[str, Any] = {}
+        for body in _index_bodies():
+            payload = self._json(self._request("PUT", f"/{ES_INDEX}", body=body, ok_400=True))
+            error = payload.get("error", {})
+            if payload.get("acknowledged") is True or error.get("type") == "resource_already_exists_exception":
+                break
         else:
-            self.analyzer = "ik_max_word"
-        payload = self._json(response)
-        if payload.get("acknowledged") is not True and payload.get("error", {}).get("type") != "resource_already_exists_exception":
-            raise RuntimeError(f"创建 ES 索引失败：{payload.get('error', {}).get('type', 'unknown')}")
+            raise RuntimeError(f"创建 ES 索引失败：{error.get('type', 'unknown')}")
+        self.analyzer = self._effective_analyzer()
+
+    def _effective_analyzer(self) -> str:
+        """分词器以索引 mapping 里真正落下的为准，不假设 ik 一定可用。"""
+
+        detail = self._json(self._request("GET", f"/{ES_INDEX}/_mapping", ok_404=True))
+        properties = next(iter(detail.values()), {}).get("mappings", {}).get("properties", {})
+        return properties.get("text", {}).get("analyzer", "standard")
 
     def _delete_case(self, case_no: str) -> None:
         self._request(
@@ -206,13 +206,20 @@ class ElasticsearchEvidenceStore:
             raise RuntimeError("ES 返回了非 JSON 响应") from exc
 
 
-def _mappings(analyzer: str | None, search_analyzer: str | None) -> dict[str, Any]:
+def _mappings(
+    analyzer: str | None,
+    search_analyzer: str | None = None,
+    analysis: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     text_field: dict[str, Any] = {"type": "text"}
     if analyzer:
         text_field["analyzer"] = analyzer
         text_field["search_analyzer"] = search_analyzer or analyzer
+    settings: dict[str, Any] = {"number_of_shards": 1, "number_of_replicas": 0}
+    if analysis:
+        settings["analysis"] = analysis
     return {
-        "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+        "settings": settings,
         "mappings": {
             "properties": {
                 "id": {"type": "keyword"},
@@ -225,6 +232,19 @@ def _mappings(analyzer: str | None, search_analyzer: str | None) -> dict[str, An
             }
         },
     }
+
+
+# 中文分词按优先级依次尝试：ik 词级分词最准；没装插件时用 ES 自带的 cjk_bigram
+# 过滤器把连续汉字切成二元组（召回明显好于按单字切）；两者都不被接受才退回 standard。
+_CJK_BIGRAM_ANALYSIS = {"analyzer": {"cjk_bigram": {"type": "custom", "tokenizer": "standard", "filter": ["cjk_bigram"]}}}
+
+
+def _index_bodies() -> list[dict[str, Any]]:
+    return [
+        _mappings("ik_max_word", "ik_smart"),
+        _mappings("cjk_bigram", "cjk_bigram", _CJK_BIGRAM_ANALYSIS),
+        _mappings(None),
+    ]
 
 
 def _block_id(case_no: str, block: PageBlock) -> str:

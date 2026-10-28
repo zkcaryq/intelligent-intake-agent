@@ -125,8 +125,10 @@ MCP Server：
 - **OCR**：默认优先百炼多模态 `qwen-vl-ocr`，需要 `VL_API_KEY`；本机装了 Tesseract 时可设
   `OCR_BACKEND=tesseract` 完全离线。两者都不可用时 `/intake/health` 会报告 `active_backend=unavailable`。
 - **检索**：Elasticsearch 负责 BM25 全文检索（型号、单号、条款号这类必须字面命中的内容），
-  Zilliz 负责稠密向量语义召回，两路结果用 RRF 融合后交给重排。中文分词优先用 `ik_max_word` /
-  `ik_smart`，插件缺失时自动退回标准分析器并在 `/intake/health` 报告实际生效的分词器。
+  Zilliz 负责稠密向量语义召回，两路结果用 RRF 融合后交给重排。中文分词按 `ik_max_word` /
+  `ik_smart` → ES 自带 `cjk_bigram`（标准切词 + 汉字二元组，无需插件）→ `standard`（单字切分）
+  三级降级，实际生效的分词器从索引 mapping 读回并在 `/intake/health` 上报，不做假设。
+  自建 ES 开启 HTTP TLS 时用 `ES_URL=https://...` 并把 `ES_VERIFY_CERTS=false`（自签证书）。
   两边都没配置时退回进程内关键词检索，流程仍可跑通但跨进程无法定位原文。
 - **SFT / LoRA**：未实现。本仓库不含训练代码、训练数据或微调指标。
 - **本地样例**：`samples/` 全部为自造数据，不含任何真实业务材料或个人敏感信息。
